@@ -1,15 +1,13 @@
 # Document Processing Pipeline For Regulated Industries (Serverless Framework + Golang)
 
-> **NOTE**: This has been transformed slighly from the source project and the original slides are a bit inaccurate as a result.
+> Credit to [David Kheyman](https://github.com/dkheyman) for the original architecture. I converted the example to use the Serverless Framework and Golang based on personal preference, but the original project which uses the CDK and Python can be viewed [here](https://github.com/aws-samples/document-processing-pipeline-for-regulated-industries)
 
-We've renamed the following pieces in our project:
+**NOTE** We've renamed the following pieces in our project, but the slides still refer to the original architecture sample:
 
 - Document Registrar is now Document Ingestion
 - Extension Detector is now Document Processing
 - Document Registration is now Document Register
 - Pipeline Operations is now Document Tracking
-
-If you want to look at the original architecture that this was converted from, it can be seen [here](https://github.com/aws-samples/document-processing-pipeline-for-regulated-industries)
 
 ## About
 
