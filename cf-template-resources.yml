@@ -1,0 +1,321 @@
+# BEGIN METADATA RESOURCES
+MetadataTopic:
+  Type: AWS::SNS::Topic
+  Properties:
+    ContentBasedDeduplication: true
+    FifoTopic: true
+    TopicName: ${self:custom.sns_metadatatopic}
+## BEGIN DOCUMENT REGISTRY RESOURCES
+DocumentRegistryTable:
+  Type: AWS::DynamoDB::Table
+  Properties:
+    KeySchema:
+    - AttributeName: documentId
+      KeyType: HASH
+    AttributeDefinitions:
+    - AttributeName: documentId
+      AttributeType: S
+    ProvisionedThroughput:
+      ReadCapacityUnits: 5
+      WriteCapacityUnits: 5
+    StreamSpecification:
+      StreamViewType: NEW_IMAGE
+    TableName: ${self:custom.dynamo_registrystore}
+  UpdateReplacePolicy: Delete
+  DeletionPolicy: Delete
+DocumentRegistryQueue:
+  Type: "AWS::SQS::Queue"
+  Properties:
+    QueueName: ${self:custom.sqs_documentregistry}
+    FifoQueue: true
+    ContentBasedDeduplication: true
+SnsToDocumentRegistryQueuePolicy:
+  Type: AWS::SQS::QueuePolicy
+  Properties:
+    PolicyDocument:
+      Version: "2012-10-17"
+      Statement:
+        - Sid: "allow-sns-messages"
+          Effect: "Allow"
+          Principal:
+            Service:
+              - "sns.amazonaws.com"
+          Resource: 
+            Fn::GetAtt:
+              - DocumentRegistryQueue
+              - Arn
+          Action: "SQS:SendMessage"
+          Condition:
+            ArnEquals:
+              "aws:SourceArn": 
+                Ref: MetadataTopic
+    Queues:
+      - Ref: DocumentRegistryQueue
+DocumentRegistryQueueSubscription:
+  Type: 'AWS::SNS::Subscription'
+  Properties:
+    TopicArn: ${self:provider.environment.METADATA_SNS_TOPIC_ARN}
+    Endpoint: 
+      Fn::GetAtt:
+      - DocumentRegistryQueue
+      - Arn
+    Protocol: sqs
+    FilterPolicy:
+        metadataType:
+        - document-registry
+## END DOCUMENT REGISTRY RESOURCES
+
+## BEGIN DOCUMENT LINEAGE RESOURCES
+DocumentLineageTable:
+  Type: AWS::DynamoDB::Table
+  Properties:
+    KeySchema:
+    - AttributeName: documentId
+      KeyType: HASH
+    - AttributeName: timestamp
+      KeyType: RANGE
+    AttributeDefinitions:
+    - AttributeName: documentId
+      AttributeType: S
+    - AttributeName: timestamp
+      AttributeType: S
+    - AttributeName: documentSignature
+      AttributeType: S
+    GlobalSecondaryIndexes:
+    - IndexName: DocumentSignatureIndex
+      KeySchema:
+      - AttributeName: documentSignature
+        KeyType: HASH
+      - AttributeName: timestamp
+        KeyType: RANGE
+      Projection:
+        ProjectionType: KEYS_ONLY
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+    ProvisionedThroughput:
+      ReadCapacityUnits: 5
+      WriteCapacityUnits: 5
+    TableName: ${self:custom.dynamo_lineagestore}
+  UpdateReplacePolicy: Delete
+  DeletionPolicy: Delete
+DocumentLineageQueue:
+  Type: "AWS::SQS::Queue"
+  Properties:
+    QueueName: ${self:custom.sqs_documentlineage}
+    FifoQueue: true
+    ContentBasedDeduplication: true
+SnsToDocumentLineageQueuePolicy:
+  Type: AWS::SQS::QueuePolicy
+  Properties:
+    PolicyDocument:
+      Version: "2012-10-17"
+      Statement:
+        - Sid: "allow-sns-messages"
+          Effect: "Allow"
+          Principal:
+            Service:
+              - "sns.amazonaws.com"
+          Resource: 
+            Fn::GetAtt:
+              - DocumentLineageQueue
+              - Arn
+          Action: "SQS:SendMessage"
+          Condition:
+            ArnEquals:
+              "aws:SourceArn": 
+                Ref: MetadataTopic
+    Queues:
+      - Ref: DocumentLineageQueue
+DocumentLineageQueueSubscription:
+  Type: 'AWS::SNS::Subscription'
+  Properties:
+    TopicArn: ${self:provider.environment.METADATA_SNS_TOPIC_ARN}
+    Endpoint: 
+      Fn::GetAtt:
+      - DocumentLineageQueue
+      - Arn
+    Protocol: sqs
+    FilterPolicy:
+        metadataType:
+        - document-lineage
+## END DOCUMENT LINEAGE RESOURCES
+
+## BEGIN PIPELINE OPERATIONS RESOURCES
+PipelineOpsTable:
+  Type: AWS::DynamoDB::Table
+  Properties:
+    KeySchema:
+    - AttributeName: documentId
+      KeyType: HASH
+    AttributeDefinitions:
+    - AttributeName: documentId
+      AttributeType: S
+    ProvisionedThroughput:
+      ReadCapacityUnits: 5
+      WriteCapacityUnits: 5
+    StreamSpecification:
+      StreamViewType: NEW_IMAGE
+    TableName: ${self:custom.dynamo_pipelineops}
+  UpdateReplacePolicy: Delete
+  DeletionPolicy: Delete
+PipelineOpsQueue:
+  Type: "AWS::SQS::Queue"
+  Properties:
+    QueueName: ${self:custom.sqs_pipelineops}
+    FifoQueue: true
+    ContentBasedDeduplication: true
+SnsToPipelineOpsQueuePolicy:
+  Type: AWS::SQS::QueuePolicy
+  Properties:
+    PolicyDocument:
+      Version: "2012-10-17"
+      Statement:
+        - Sid: "allow-sns-messages"
+          Effect: "Allow"
+          Principal:
+            Service:
+              - "sns.amazonaws.com"
+          Resource: 
+            Fn::GetAtt:
+              - PipelineOpsQueue
+              - Arn
+          Action: "SQS:SendMessage"
+          Condition:
+            ArnEquals:
+              "aws:SourceArn": 
+                Ref: MetadataTopic
+    Queues:
+      - Ref: PipelineOpsQueue
+PipelineOpsQueueSubscription:
+  Type: 'AWS::SNS::Subscription'
+  Properties:
+    TopicArn: ${self:provider.environment.METADATA_SNS_TOPIC_ARN}
+    Endpoint: 
+      Fn::GetAtt:
+      - PipelineOpsQueue
+      - Arn
+    Protocol: sqs
+    FilterPolicy:
+        metadataType:
+        - pipeline-operations
+## END PIPELINE OPERATIONS RESOURCES
+# END METADATA RESOURCES
+
+# BEGIN TEXTRACT ASSETS
+JobCompletion:
+  Type: AWS::SNS::Topic
+  Properties:
+    TopicName: ${self:custom.sns_jobcompletiontopic}
+TextractServiceRole:
+  Type: AWS::IAM::Role
+  Properties:
+    AssumeRolePolicyDocument:
+      Statement:
+      - Action: sts:AssumeRole
+        Effect: Allow
+        Principal:
+          Service: textract.amazonaws.com
+      Version: '2012-10-17'
+    RoleName: ${self:custom.textract_servicerole}
+TextractServiceRoleDefaultPolicy:
+  Type: AWS::IAM::Policy
+  Properties:
+    PolicyDocument:
+      Statement:
+      - Action: sns:Publish
+        Effect: Allow
+        Resource:
+          Ref: JobCompletion
+      Version: '2012-10-17'
+    PolicyName: ${self:custom.textract_servicepolicy}
+    Roles:
+    - Ref: TextractServiceRole
+# END TEXTRACT ASSETS
+
+# BEGIN COMPREHEND ASSETS
+ComprehendResultsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: ${self:custom.s3_comprehend}
+    UpdateReplacePolicy: Delete
+    DeletionPolicy: Delete
+KeyPhraseSearchDomain:
+  Type: AWS::OpenSearchService::Domain
+  Properties:
+    CognitoOptions:
+      Enabled: false
+    DomainEndpointOptions:
+      EnforceHTTPS: true
+      TLSSecurityPolicy: Policy-Min-TLS-1-0-2019-07
+    DomainName: ${self:custom.es_keyphrasedomain}
+    EBSOptions:
+      EBSEnabled: true
+      VolumeSize: 10
+      VolumeType: gp2
+    ClusterConfig:
+      DedicatedMasterEnabled: false
+      InstanceCount: 1
+      InstanceType: r5.large.search
+      ZoneAwarenessEnabled: false
+    EncryptionAtRestOptions:
+      Enabled: true
+    LogPublishingOptions: {}
+    NodeToNodeEncryptionOptions:
+      Enabled: true
+    AccessPolicies:
+      Version: "2012-10-17"
+      Statement:
+        - Effect: Allow
+          Principal:
+            AWS: "arn:aws:iam::${aws:accountId}:root"
+          Action: "es:*"
+          Resource: "arn:aws:es:us-east-1:*:domain/${self:custom.es_keyphrasedomain}/*"
+        - Effect: Allow
+          Principal:
+            AWS: !GetAtt IamRoleLambdaExecution.Arn
+          Action: 'es:ESHttp*'
+          Resource: "arn:aws:es:us-east-1:*:domain/${self:custom.es_keyphrasedomain}/*"
+        # - Effect: Allow
+        #   Principal:
+        #     AWS: "*"
+        #   Action: "es:*"
+        #   Condition:
+        #     IpAddress:
+        #       aws:SourceIp:
+        #       - X.Y.Z.1  # Replace with your own IP here.
+        #   Resource: "arn:aws:es:us-east-1:*:domain/${self:custom.es_keyphrasedomain}/*"           
+  UpdateReplacePolicy: Delete
+  DeletionPolicy: Delete
+
+  ## I think this is too expensive to provision.  Currently getting Request errors when attempting.
+# KeyPhraseCollectionEncryptionPolicy:
+#   Type: 'AWS::OpenSearchServerless::SecurityPolicy'
+#   Properties:
+#     Name: keyphrase-security-policy
+#     Type: encryption
+#     Description: Encryption policy for test collections
+#     Policy: >-
+#       {"Rules":[{"ResourceType":"collection","Resource":["collection/keyphrase*"]}],"AWSOwnedKey":true}
+# KeyPhraseCollectionNetworkPolicy:
+#   Type: 'AWS::OpenSearchServerless::SecurityPolicy'
+#   Properties:
+#     Name: keyphrase-security-policy
+#     Type: network
+#     Description: Network policy for test collections
+#     Policy: >-
+#       {"Rules":[{"ResourceType":"collection","Resource":["collection/keyphrase-collection"]},{"ResourceType":"dashboard","Resource":["collection/keyphrase-collection"]}],"AllowFromPublic":true}
+#   DependsOn: KeyPhraseCollectionEncryptionPolicy
+# KeyPhraseCollection:
+#   Type: AWS::OpenSearchServerless::Collection
+#   Properties:
+#     Name: keyphrase-collection
+#     Type: SEARCH
+#     Description: Collection of key phrases from the manual documents.
+#   UpdateReplacePolicy: Delete
+#   DeletionPolicy: Delete
+#   DependsOn:
+#   - KeyPhraseCollectionEncryptionPolicy
+#   - KeyPhraseCollectionNetworkPolicy
+
+# END COMPREHEND ASSETS

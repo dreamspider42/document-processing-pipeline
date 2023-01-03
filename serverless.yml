@@ -1,0 +1,234 @@
+service: document-processing-pipeline
+
+frameworkVersion: ">=2.24.0"
+
+provider:
+  name: aws
+  runtime: go1.x
+  environment:
+    METADATA_SNS_TOPIC_ARN: arn:aws:sns:${aws:region}:${aws:accountId}:${self:custom.sns_metadatatopic}
+    PIPELINE_OPS_TABLE: ${self:custom.dynamo_pipelineops}
+    REGISTRY_TABLE: ${self:custom.dynamo_registrystore}
+    LINEAGE_TABLE: ${self:custom.dynamo_lineagestore}
+    LINEAGE_INDEX: ${self:custom.dynamo_lineageindex}
+    REGISTRY_SQS_QUEUE_ARN: arn:aws:sqs:${aws:region}:${aws:accountId}:${self:custom.sqs_documentregistry}
+    LINEAGE_SQS_QUEUE_ARN: arn:aws:sqs:${aws:region}:${aws:accountId}:${self:custom.sqs_documentlineage}
+    OPS_SQS_QUEUE_ARN: arn:aws:sqs:${aws:region}:${aws:accountId}:${self:custom.sqs_pipelineops}
+    SYNC_TEXTRACT_BUCKET_NAME: ${self:custom.s3_imagedocuments}
+    ASYNC_TEXTRACT_BUCKET_NAME: ${self:custom.s3_largedocuments}
+    TEXTRACT_RESULTS_BUCKET_NAME: ${self:custom.s3_textractresults}
+    TEXTRACT_SNS_TOPIC_ARN: arn:aws:sns:${aws:region}:${aws:accountId}:${self:custom.sns_jobcompletiontopic}
+    TEXTRACT_SNS_ROLE_ARN:  arn:aws:iam::${aws:accountId}:role/${self:custom.textract_servicerole}
+    TARGET_COMPREHEND_BUCKET: ${self:custom.s3_comprehend}
+    TARGET_ES_CLUSTER: !GetAtt KeyPhraseSearchDomain.DomainEndpoint
+    ES_CLUSTER_INDEX: document
+
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:
+            - dynamodb:Query
+            - dynamodb:Scan
+            - dynamodb:GetItem
+            - dynamodb:PutItem
+            - dynamodb:UpdateItem
+            - dynamodb:DeleteItem
+            - dynamodb:DescribeStream
+            - dynamodb:GetRecords
+            - dynamodb:GetShardIterator
+          Resource: arn:aws:dynamodb:${aws:region}:*:table/${self:custom.stackName}*
+        - Effect: Allow
+          Action:
+          - s3:GetObject*
+          - s3:GetBucket*
+          - s3:List*
+          - s3:DeleteObject*
+          - s3:PutObject*
+          - s3:Abort*
+          - s3:PutBucketNotification*
+          Resource:
+          - arn:aws:s3:::${self:custom.stackName}-*
+          - arn:aws:s3:::${self:custom.stackName}-*/*
+        - Effect: Allow
+          Action:
+          - sqs:ReceiveMessage
+          - sqs:ChangeMessageVisibility
+          - sqs:GetQueueUrl
+          - sqs:DeleteMessage
+          - sqs:GetQueueAttributes
+          Resource: arn:aws:sqs:${aws:region}:*:${self:custom.stackName}*
+        - Effect: Allow
+          Action:
+          - sns:*
+          Resource: arn:aws:sns:${aws:region}:*:${self:custom.stackName}*
+        - Effect: Allow
+          Action: textract:*
+          Resource: "*"
+        - Effect: Allow
+          Action: iam:PassRole
+          Resource:
+            Fn::GetAtt:
+            - TextractServiceRole
+            - Arn
+        - Effect: Allow
+          Action: es:*
+          Resource: arn:aws:es:us-east-1:*:domain/${self:custom.es_keyphrasedomain}/*
+        - Effect: Allow
+          Action: comprehend:*
+          Resource: "*"
+plugins:
+  - serverless-s3-cleaner
+
+functions:
+  # 1. Ingest + tag raw documents and publish events to trigger downstream subscribers.
+  documentIngest:
+    handler: bin/documentIngest
+    package:
+      include:
+        - ./bin/documentIngest
+    events:
+      - s3:
+          bucket: ${self:custom.s3_rawdocuments}
+          event: s3:ObjectCreated:*
+      - s3:
+          bucket: ${self:custom.s3_rawdocuments}
+          event: s3:ObjectRemoved:*
+  # 2.1 Register the document in our database if its valid (post:documentIngest)
+  documentRegister:
+    handler: bin/documentRegister
+    package:
+      include:
+        - ./bin/documentRegister
+    events:
+      - sqs:
+          arn: 
+            Fn::GetAtt:
+              - DocumentRegistryQueue
+              - Arn
+          batchSize: 1
+  # 2.2 Record the history of the document (post:documentIngest + updated in future steps)
+  documentLineage:
+    handler: bin/documentLineage
+    package:
+      include:
+        - ./bin/documentLineage
+    events:
+      - sqs:
+          arn: 
+            Fn::GetAtt:
+              - DocumentLineageQueue
+              - Arn
+          batchSize: 1
+  # 3. Record the history of the document (post:documentRegister)
+  documentClassifier:
+    handler: bin/documentClassifier
+    package:
+      include:
+        - ./bin/documentClassifier
+    events:
+      - stream:
+          type: dynamodb
+          arn:
+            Fn::GetAtt: [DocumentRegistryTable, StreamArn]	
+          batchSize: 100
+          startingPosition: TRIM_HORIZON
+  # 4. Track the documents processing through the system (ops) (post:documentClassifier + updated in future steps)
+  documentTracking:
+    handler: bin/documentTracking
+    package:
+      include:
+        - ./bin/documentTracking
+    events:
+      - sqs:
+          arn: 
+            Fn::GetAtt:
+              - PipelineOpsQueue
+              - Arn
+          batchSize: 1
+  # 5. Process the document + send it to the right bucket for processing (post:documentTracking)
+  documentProcessor:
+    handler: bin/documentProcessor
+    package:
+      include:
+        - ./bin/documentProcessor
+    events:
+      - stream:
+          type: dynamodb
+          arn:
+            Fn::GetAtt: [PipelineOpsTable, StreamArn]	
+          batchSize: 100
+          startingPosition: TRIM_HORIZON
+  # 6.1 Textract for Synchronous Document Types (post:documentProcessor)
+  textractSync:
+    handler: bin/textractSync
+    package:
+      include:
+        - ./bin/textractSync
+    events:
+      - s3:
+          bucket: ${self:custom.s3_imagedocuments}
+          event: s3:ObjectCreated:*
+  # 6.2 Textract Startr for Asynchronous Document Types (post:documentProcessor)
+  textractAsyncStarter:
+    handler: bin/textractAsyncStarter
+    package:
+      include:
+        - ./bin/textractAsyncStarter
+    events:
+      - s3:
+          bucket: ${self:custom.s3_largedocuments}
+          event: s3:ObjectCreated:*
+  # 6.2.1 Textract Processor for completed processing jobs.
+  textractAsyncProcessor:
+    handler: bin/textractAsyncProcessor
+    memorySize: 3008
+    timeout: 900
+    package:
+      include:
+        - ./bin/textractAsyncProcessor
+    events:
+      - sns:
+          arn: !Ref JobCompletion
+          topicName: ${self:custom.sns_jobcompletiontopic}
+  # 7 Comprehend processing of Textract Results (post:textractSync/textractAsync) + push to OpenSearch
+  comprehendProcessor:
+    handler: bin/comprehendProcessor
+    package:
+      include:
+        - ./bin/comprehendProcessor
+    events:
+      - s3:
+          bucket: ${self:custom.s3_textractresults}
+          event: s3:ObjectCreated:*
+          rules:
+            - suffix: fullresponse.json
+custom:
+  stageConfig: ${file(./stage-config.json):${sls:stage}}
+  stackName: ${self:service}-${sls:stage}
+  s3_rawdocuments: ${self:custom.stackName}-rawdocuments
+  s3_imagedocuments: ${self:custom.stackName}-imagedocuments
+  s3_largedocuments: ${self:custom.stackName}-largedocuments
+  s3_textractresults: ${self:custom.stackName}-textractresults
+  s3_comprehend: ${self:custom.stackName}-comprehend
+  sns_metadatatopic: ${self:custom.stackName}-MetadataServicesTopic.fifo
+  sns_jobcompletiontopic: ${self:custom.stackName}-JobCompletionTopic
+  sqs_documentregistry: ${self:custom.stackName}-DocumentRegistryQueue.fifo
+  sqs_documentlineage: ${self:custom.stackName}-DocumentLineageQueue.fifo
+  sqs_pipelineops: ${self:custom.stackName}-PipelineOpsQueue.fifo
+  dynamo_pipelineops: ${self:custom.stackName}-pipeline-operations
+  dynamo_registrystore: ${self:custom.stackName}-document-registry
+  dynamo_lineagestore: ${self:custom.stackName}-document-lineage
+  dynamo_lineageindex: DocumentSignatureIndex
+  textract_servicerole: ${self:custom.stackName}-${aws:region}-textractrole
+  textract_servicepolicy: ${self:custom.stackName}-${aws:region}-textractpolicy
+  es_keyphrasedomain: keyphrasedomain-${sls:stage}
+  serverless-s3-cleaner:
+     buckets:
+       - ${self:custom.s3_rawdocuments}
+       - ${self:custom.s3_imagedocuments}
+       - ${self:custom.s3_largedocuments}
+       - ${self:custom.s3_textractresults}
+       - ${self:custom.s3_comprehend}
+resources:
+   Resources: ${file(./cf-template-resources.yml)}

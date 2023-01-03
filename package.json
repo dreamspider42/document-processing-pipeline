@@ -1,0 +1,10 @@
+{
+  "name": "document-processing-pipeline",
+  "version": "1.0.0",
+  "description": "Serverless CRUD service exposing a REST HTTP interface",
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "serverless-s3-cleaner": "^2.0.2"
+  }
+}
