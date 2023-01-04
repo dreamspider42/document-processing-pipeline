@@ -1,6 +1,6 @@
 # Document Processing Pipeline For Regulated Industries (Serverless Framework + Golang)
 
-> Credit to [David Kheyman](https://github.com/dkheyman) for the original architecture. I converted the example to use the Serverless Framework and Golang based on personal preference, but the original project which uses the CDK and Python can be viewed [here](https://github.com/aws-samples/document-processing-pipeline-for-regulated-industries)
+> Credit to David Kheyman, Anirudh Menon, and Mojgan Ahmadi for the original architecture. I converted the example to use the Serverless Framework and Golang based on personal preference, but the original project which uses the CDK and Python can be viewed [here](https://github.com/aws-samples/document-processing-pipeline-for-regulated-industries).  The blog post about the topic with more information can also be found [here](https://aws.amazon.com/blogs/machine-learning/intelligent-governance-of-document-processing-pipelines-for-regulated-industries/)
 
 **NOTE** We've renamed the following pieces in our project, but the slides still refer to the original architecture sample:
 
